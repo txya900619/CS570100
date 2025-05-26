@@ -5,6 +5,7 @@ import warnings
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.optim import lr_scheduler
 from torchvision import datasets, transforms
 from tqdm import tqdm
 
@@ -138,7 +139,11 @@ warnings.filterwarnings("ignore")
 
 def train(epochs, optimizer):
     model.train()
+    scheduler = lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=epochs
+    )  # Use CosineAnnealingLR
     for epoch in range(epochs):
+        model.train()
         pbar = tqdm(enumerate(train_loader), total=len(train_loader))
         for batch_idx, (data, target) in pbar:
             data, target = data.to(device), target.to(device)
@@ -152,9 +157,8 @@ def train(epochs, optimizer):
                 # TODO:
                 #    zero-out all the gradients corresponding to the pruned weights
                 #################################
-
-                pass
-
+                if p.grad is not None:
+                    p.grad.data[p.data.eq(0)] = 0
             optimizer.step()
             if batch_idx % args.log_interval == 0:
                 done = batch_idx * len(data)
@@ -163,6 +167,10 @@ def train(epochs, optimizer):
                     f"Train Epoch: {epoch} [{done:5}/{len(train_loader.dataset)} ({percentage:3.0f}%)]  "
                     f"Loss: {loss.item():.6f}"
                 )
+        scheduler.step()  # Step the scheduler
+        # Calculate and log test accuracy at the end of each epoch
+        accuracy = test()
+        util.log(f"Epoch_{epoch}_Test_Accuracy {accuracy}", args.log)
 
 
 def test():

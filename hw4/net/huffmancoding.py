@@ -236,17 +236,53 @@ def huffman_encode_conv(param, name, directory):
     #   3. Do huffman coding on these 4 lists individually.
     #################################
 
-    # Note that we do not huffman encode "conv" yet. The following four lines of code need to be modified
     conv = param.data.cpu().numpy()
-    conv.dump(f"{directory}/{name}")
+    shape = conv.shape  # (Kn, Ch, W, H)
+
+    # Reshape to (Kn * Ch, W, H) and then process each (W, H) slice
+    kn, ch, w, h = shape
+    conv_reshaped = conv.reshape(kn * ch, w, h)
+
+    # Lists to store concatenated data from all CSR matrices
+    all_data = []
+    all_indices = []
+    all_indptr_diff = []
+    all_shapes = []
+
+    # Process each 2D slice (W, H)
+    for i in range(kn * ch):
+        slice_2d = conv_reshaped[i]  # Shape: (W, H)
+
+        # Convert to CSR matrix
+        mat = csr_matrix(slice_2d)
+
+        # Collect data
+        all_data.extend(mat.data)
+        all_indices.extend(mat.indices)
+        all_indptr_diff.extend(calc_index_diff(mat.indptr))
+        all_shapes.append(slice_2d.shape)
+
+    # Convert to numpy arrays
+    all_data = np.array(all_data, dtype=np.float32)
+    all_indices = np.array(all_indices, dtype=np.int32)
+    all_indptr_diff = np.array(all_indptr_diff, dtype=np.int32)
+
+    # Save original shape information
+    shape_info = np.array([kn, ch, w, h], dtype=np.int32)
+
+    # Encode using Huffman coding
+    t0, d0 = huffman_encode(all_data, name + "_csr_data", directory)
+    t1, d1 = huffman_encode(all_indices, name + "_csr_indices", directory)
+    t2, d2 = huffman_encode(all_indptr_diff, name + "_csr_indptr", directory)
+    t3, d3 = huffman_encode(shape_info, name + "_shape", directory)
 
     # Print statistics
     original = conv.nbytes
-    compressed = original
+    compressed = t0 + t1 + t2 + t3 + d0 + d1 + d2 + d3
     log_text = (
         f"{name:<15} | "
         f"{original:20} {compressed:20} {original / compressed:>10.2f}x "
-        f"{100 * compressed / original:>6.2f}% (NEED TO BE IMPLEMENTED)"
+        f"{100 * compressed / original:>6.2f}%"
     )
     util.log(log_text)
     print(log_text)
@@ -308,9 +344,58 @@ def huffman_decode_conv(param, name, directory):
     #   above, and refer to encode and decode code of "fc"
     #################################
 
-    # Note that we do not huffman decode "conv" yet. The following three lines of code need to be modified
-    conv = np.load(directory + "/" + name, allow_pickle=True)
-    param.data = torch.from_numpy(conv).to(param.device)
+    # Decode the Huffman encoded data
+    all_data = huffman_decode(directory, name + "_csr_data", dtype="float32")
+    all_indices = huffman_decode(directory, name + "_csr_indices", dtype="int32")
+    all_indptr_diff = huffman_decode(directory, name + "_csr_indptr", dtype="int32")
+    shape_info = huffman_decode(directory, name + "_shape", dtype="int32")
+
+    # Reconstruct original shape
+    kn, ch, w, h = shape_info
+
+    # Reconstruct each 2D slice
+    conv_reconstructed = np.zeros((kn * ch, w, h), dtype=np.float32)
+
+    data_idx = 0
+    indices_idx = 0
+    indptr_idx = 0
+
+    for i in range(kn * ch):
+        # Determine the size of this slice's CSR matrix data
+        # We need to find how many elements belong to this slice
+        slice_shape = (w, h)
+
+        # Count how many indptr differences belong to this slice (should be w differences)
+        slice_indptr_diff = all_indptr_diff[indptr_idx : indptr_idx + w]
+        slice_indptr = reconstruct_indptr(slice_indptr_diff)
+        indptr_idx += w
+
+        # Count how many data elements belong to this slice
+        num_data_elements = len(slice_indptr_diff) if len(slice_indptr_diff) > 0 else 0
+        if len(slice_indptr) > 1:
+            num_data_elements = slice_indptr[-1]
+
+        # Extract data and indices for this slice
+        slice_data = all_data[data_idx : data_idx + num_data_elements]
+        slice_indices = all_indices[indices_idx : indices_idx + num_data_elements]
+
+        # Move indices forward
+        data_idx += num_data_elements
+        indices_idx += num_data_elements
+
+        # Reconstruct CSR matrix for this slice
+        if num_data_elements > 0:
+            mat = csr_matrix(
+                (slice_data, slice_indices, slice_indptr), shape=slice_shape
+            )
+            conv_reconstructed[i] = mat.toarray()
+        # If num_data_elements is 0, the slice remains all zeros
+
+    # Reshape back to original shape (Kn, Ch, W, H)
+    conv_final = conv_reconstructed.reshape(kn, ch, w, h)
+
+    # Set parameter data
+    param.data = torch.from_numpy(conv_final).to(param.device)
 
 
 def huffman_decode_fc(param, name, directory):

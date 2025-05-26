@@ -25,6 +25,15 @@ class PruningModule(Module):
         #    reference)
         #################################
 
+        if isinstance(threshold, np.ndarray):
+            # If threshold is an array, apply it to each channel
+            for i in range(module.weight.data.shape[0]):
+                for j in range(module.weight.data.shape[1]):
+                    module.weight.data[i, j, :, :][
+                        module.weight.data[i, j, :, :].abs() < threshold[i, j]
+                    ] = 0
+        else:
+            module.weight.data[module.weight.data.abs() < threshold] = 0
         pass
 
     def prune_by_percentile(self, q=DEFAULT_PRUNE_RATE):
@@ -35,11 +44,14 @@ class PruningModule(Module):
         # 	remain unchanged.
         ########################
 
-        # Calculate percentile value
-        pass
-
-        # Prune the weights and mask
-        pass
+        # Calculate percentile value and prune the weights
+        for name, module in self.named_modules():
+            if name in q:
+                # Get the weights and calculate threshold
+                weights = module.weight.data.cpu().numpy()
+                threshold = np.percentile(np.abs(weights), 100 - q[name])
+                print(f"Pruning with threshold : {threshold:.4f} for layer {name}")
+                self._prune(module, threshold)
 
     def prune_by_std(self, s=0.25):
         for name, module in self.named_modules():
@@ -52,3 +64,8 @@ class PruningModule(Module):
                 threshold = np.std(module.weight.data.cpu().numpy()) * s
                 print(f"Pruning with threshold : {threshold:.4f} for layer {name}")
                 self._prune(module, threshold)
+
+            if name.startswith("conv"):
+                thresholds = np.std(module.weight.data.cpu().numpy(), axis=(2, 3)) * s
+                print(f"Pruning with thresholds : {thresholds} for layer {name}")
+                self._prune(module, thresholds)

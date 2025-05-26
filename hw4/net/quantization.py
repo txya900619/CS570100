@@ -51,6 +51,36 @@ def apply_weight_sharing(model, bits=5):
             #################################
 
             print(
-                f"{name:20} | {str(module.weight.size()):35} | ** NEED TO BE IMPLEMENTED **"
+                f"{name:20} | {str(module.weight.size()):35} | => Quantize to {quan_range} indices"
             )
-            pass
+            # Get non-zero weights
+            weight_flat = weight.reshape(-1)
+            non_zero_mask = weight_flat != 0
+            non_zero_weights = weight_flat[non_zero_mask]
+
+            if len(non_zero_weights) > 0:
+                # Use KMeans to cluster non-zero weights
+                space = np.linspace(
+                    min(non_zero_weights), max(non_zero_weights), num=quan_range
+                )
+                kmeans = KMeans(
+                    n_clusters=len(space),
+                    init=space.reshape(-1, 1),
+                    n_init=1,
+                    algorithm="lloyd",
+                )
+                kmeans.fit(non_zero_weights.reshape(-1, 1))
+
+                # Replace weights with cluster centroids
+                new_weights = weight_flat.copy()
+                new_weights[non_zero_mask] = kmeans.cluster_centers_[
+                    kmeans.labels_
+                ].reshape(-1)
+
+                # Reshape back to original shape and update module weights
+                module.weight.data = torch.from_numpy(new_weights.reshape(shape)).to(
+                    dev
+                )
+            else:
+                # If all weights are zero, just keep them as is
+                module.weight.data = torch.from_numpy(weight).to(dev)
